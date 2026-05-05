@@ -1,0 +1,38 @@
+# Secrets
+.env
+.env.local
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Project outputs (derivative of paid Google Street View imagery; not for redistribution)
+data/images/
+data/results/
+
+# Model weights (some gated; not redistributable)
+*.pt
+*.pth
+*.safetensors
+
+# Ultralytics runtime artifacts
+runs/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE / agent local state
+.idea/
+.vscode/
+.claude/
+*.swp

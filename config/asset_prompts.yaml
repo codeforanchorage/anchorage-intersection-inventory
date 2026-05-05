@@ -1,0 +1,85 @@
+# SAM 3 text prompts for intersection-asset detection.
+#
+# One prompt per asset_type. After three tuning iterations we found that
+# stacking multiple prompt variants on the same asset_type roughly multiplied
+# detection counts (the variants find the same physical objects), and NMS by
+# IoU couldn't merge them because they overlap by category, not by region.
+# Single best-phrased prompt per asset_type plus per-prompt confidence is the
+# right balance.
+#
+# What SAM 3 still over-counts (cannot be fixed by prompts alone):
+#   - Long thin assets like mast arms (segmented into many adjacent slices)
+#   - Each individual zebra stripe in a painted crosswalk (mostly mitigated
+#     by raising confidence to 0.50)
+# These are SAM 3's open-vocab segmentation behavior; vision-only is the
+# canonical backend for asset *counts*. Use SAM 3 for spatial geometry
+# (bboxes, masks) and vision-only for "how many crosswalks does this
+# intersection have?".
+#
+# Asset types known to be below SAM 3's effective resolution at 640x640:
+#   curb_ramp, push_button, signal_cabinet, signal_pole — vision-only
+#   handles them more reliably.
+
+prompts:
+  # --- Signals --------------------------------------------------------------
+  - text: "traffic signal head"
+    asset_type: "traffic_signal_head"
+    confidence: 0.35
+    category: "signals"
+
+  - text: "walk signal"
+    asset_type: "pedestrian_signal"
+    confidence: 0.25
+    category: "signals"
+
+  - text: "signal pole"
+    asset_type: "signal_pole"
+    confidence: 0.35
+    category: "signals"
+
+  - text: "overhead traffic signal arm"
+    asset_type: "mast_arm"
+    confidence: 0.25
+    category: "signals"
+
+  - text: "traffic control cabinet"
+    asset_type: "signal_cabinet"
+    confidence: 0.25
+    category: "signals"
+
+  # --- Markings -------------------------------------------------------------
+  - text: "crosswalk marking"
+    asset_type: "crosswalk_marking"
+    confidence: 0.50
+    category: "markings"
+
+  - text: "stop line"
+    asset_type: "lane_marking"
+    confidence: 0.25
+    category: "markings"
+
+  # --- ADA / pedestrian -----------------------------------------------------
+  - text: "curb ramp"
+    asset_type: "curb_ramp"
+    confidence: 0.20
+    category: "ada"
+
+  - text: "pedestrian crossing button"
+    asset_type: "push_button"
+    confidence: 0.20
+    category: "ada"
+
+  # --- Lighting -------------------------------------------------------------
+  - text: "street light"
+    asset_type: "street_light"
+    confidence: 0.35
+    category: "lighting"
+
+  # --- Signage --------------------------------------------------------------
+  # Tightened further: SAM 3 still over-fragments large signs into multiple
+  # boxes at slightly different scales. 0.55 keeps the cleanest detection
+  # per physical sign at the cost of missing some smaller distant ones.
+  - text: "road sign"
+    asset_type: "road_sign"
+    confidence: 0.55
+    category: "signage"

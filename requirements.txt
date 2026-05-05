@@ -1,0 +1,18 @@
+requests>=2.31.0
+geojson>=3.1.0
+python-dotenv>=1.0.0
+Pillow>=10.0.0
+anthropic>=0.40.0
+opencv-python>=4.9.0
+numpy>=1.26.0
+PyYAML>=6.0
+
+# Phase 3 detection backends — install whichever you need:
+#   sam3  (default, GPU): pip install ultralytics torch torchvision einops
+#   roboflow:             pip install roboflow
+#   vision-only:          (Claude only, no extra deps)
+ultralytics>=8.3.237
+torch>=2.4.0
+torchvision>=0.19.0
+einops
+roboflow>=1.1.0
