@@ -34,6 +34,8 @@ def run_phase(phase: int, args: argparse.Namespace) -> int:
             argv.append("--dry-run")
         if args.limit is not None:
             argv += ["--limit", str(args.limit)]
+        if args.refresh_metadata:
+            argv.append("--refresh-metadata")
         return fetch_imagery.main(argv)
     if phase == 3:
         print("=== Phase 3: detect assets ===")
@@ -81,6 +83,9 @@ def main() -> int:
                         help="Process only the first N intersections.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Phase 2: check GSV coverage without downloading.")
+    parser.add_argument("--refresh-metadata", action="store_true",
+                        help="Phase 2: re-query GSV metadata for every intersection "
+                             "and replace images where pano_id has changed.")
     parser.add_argument("--backend", choices=["sam3", "roboflow", "vision-only"],
                         default="sam3",
                         help="Phase 3 detection backend (default: sam3).")

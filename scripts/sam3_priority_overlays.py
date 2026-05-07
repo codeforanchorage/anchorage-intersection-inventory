@@ -110,6 +110,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="SAM 3 overlays for top-N priority intersections.")
     parser.add_argument("--top", type=int, default=10,
                         help="Number of priority intersections to overlay (default 10).")
+    parser.add_argument("--prompts", default=str(detect_assets.DEFAULT_PROMPTS_PATH),
+                        help="Path to SAM 3 prompts YAML "
+                             "(use config/asset_prompts_pole_only.yaml for "
+                             "pole-mounted-only overlays).")
+    parser.add_argument("--suffix", default="sam3",
+                        help="Filename suffix for overlay output "
+                             "(default 'sam3'; use e.g. 'sam3_pole' to keep "
+                             "alongside the full overlay).")
     args = parser.parse_args()
 
     targets = parse_top_n(INDEX_PATH, args.top)
@@ -120,8 +128,8 @@ def main() -> int:
 
     print("Loading SAM 3 (one-time)...")
     predictor = detect_assets.init_sam3_predictor(default_confidence=0.25)
-    prompts = detect_assets.load_prompts(detect_assets.DEFAULT_PROMPTS_PATH)
-    print(f"  {len(prompts)} prompts loaded")
+    prompts = detect_assets.load_prompts(Path(args.prompts))
+    print(f"  {len(prompts)} prompts loaded from {args.prompts}")
 
     n_done = 0
     n_skipped = 0
@@ -132,7 +140,7 @@ def main() -> int:
             print(f"  [{osm_id} h{heading} p{pitch}] no GSV image — skipping")
             n_skipped += 1
             continue
-        out = PRIORITY_DIR / f"{osm_id}_h{heading}_p{pitch}_sam3.jpg"
+        out = PRIORITY_DIR / f"{osm_id}_h{heading}_p{pitch}_{args.suffix}.jpg"
         t0 = time.time()
         detections = detect_assets.detect_with_sam3(predictor, src, prompts)
         annotate_sam3_overlay(src, detections, out, osm_id, heading, pitch)

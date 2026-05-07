@@ -1,0 +1,39 @@
+# SAM 3 text prompts — pole-mounted assets only.
+#
+# Used by sam3_priority_overlays.py (and Phase 3 if invoked with --prompts)
+# to declutter the priority overlays. Excludes ground markings (crosswalks,
+# stop lines, curb ramps), the pedestrian "walk" display ("cross signals"),
+# pedestrian push buttons, and road signs. Keeps the infrastructure that
+# hangs on or attaches to the signal pole, plus street lights (often
+# co-located with signal poles in Anchorage).
+
+prompts:
+  - text: "traffic signal head"
+    asset_type: "traffic_signal_head"
+    confidence: 0.35
+    category: "signals"
+
+  - text: "signal pole"
+    asset_type: "signal_pole"
+    confidence: 0.35
+    category: "signals"
+
+  - text: "overhead traffic signal arm"
+    asset_type: "mast_arm"
+    confidence: 0.25
+    category: "signals"
+
+  - text: "traffic control cabinet"
+    asset_type: "signal_cabinet"
+    confidence: 0.25
+    category: "signals"
+
+  - text: "street light"
+    asset_type: "street_light"
+    confidence: 0.35
+    category: "lighting"
+
+  - text: "road sign"
+    asset_type: "road_sign"
+    confidence: 0.55
+    category: "signage"
