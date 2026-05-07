@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from src import (
     fetch_signals, fetch_imagery, detect_assets, assess_condition,
-    export_geojson, visualize_priority,
+    export_geojson, visualize_priority, fetch_gis_context,
 )  # noqa: E402
 
 
@@ -68,6 +68,16 @@ def run_phase(phase: int, args: argparse.Namespace) -> int:
         if args.limit is not None:
             argv += ["--limit", str(args.limit)]
         return visualize_priority.main(argv)
+    if phase == 7:
+        print("=== Phase 7: fetch Anchorage GIS context (DEM + 2024 aerial) ===")
+        argv = []
+        if args.limit is not None:
+            argv += ["--limit", str(args.limit)]
+        if args.refresh_gis:
+            argv.append("--refresh")
+        if args.skip_aerial_sam3:
+            argv.append("--skip-sam3")
+        return fetch_gis_context.main(argv)
     raise ValueError(f"unknown phase {phase}")
 
 
@@ -75,10 +85,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Anchorage intersection asset inventory pipeline.",
     )
-    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4, 5, 6],
-                        help="Run a single phase.")
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3, 4, 5, 6, 7],
+                        help="Run a single phase. Phase 7 = Anchorage GIS "
+                             "context (DEM elevation + 2024 EagleView aerial "
+                             "+ top-down SAM 3); inserts between Phase 3 and "
+                             "Phase 4 in --all.")
     parser.add_argument("--all", action="store_true",
-                        help="Run phases 1 through 6 sequentially.")
+                        help="Run phases 1, 2, 3, 7, 4, 5, 6 sequentially.")
     parser.add_argument("--limit", type=int, default=None,
                         help="Process only the first N intersections.")
     parser.add_argument("--dry-run", action="store_true",
@@ -101,6 +114,10 @@ def main() -> int:
                         help="Phase 3 vision-only: concurrent in-flight Claude calls (default 1).")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Phase 3: skip intersections with existing detections.")
+    parser.add_argument("--refresh-gis", action="store_true",
+                        help="Phase 7: re-fetch aerials and re-run SAM 3 even when outputs exist.")
+    parser.add_argument("--skip-aerial-sam3", action="store_true",
+                        help="Phase 7: fetch DEM + aerial only; skip SAM 3 detection on aerials.")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable DEBUG logging.")
     args = parser.parse_args()
@@ -112,7 +129,8 @@ def main() -> int:
     if not args.phase and not args.all:
         parser.error("specify --phase N or --all")
 
-    phases = [1, 2, 3, 4, 5, 6] if args.all else [args.phase]
+    # Phase 7 produces inputs Phase 4 can ingest, so it slots between 3 and 4.
+    phases = [1, 2, 3, 7, 4, 5, 6] if args.all else [args.phase]
     for p in phases:
         rc = run_phase(p, args)
         if rc != 0:

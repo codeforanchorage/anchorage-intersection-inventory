@@ -71,6 +71,11 @@ def build_feature(record: dict, signal_props: dict) -> Feature:
         "gsv_coverage": record.get("gsv_coverage", False),
         "gsv_date": record.get("gsv_date", ""),
         "gsv_pano_id": record.get("gsv_pano_id", ""),
+        # Anchorage GIS context (Phase 7) — None when Phase 7 hasn't run.
+        "ground_elevation_m": record.get("ground_elevation_m"),
+        "aerial_crosswalk_count": record.get("aerial_crosswalk_count"),
+        "aerial_vehicle_count": record.get("aerial_vehicle_count"),
+        "crosswalk_count_consistency": record.get("crosswalk_count_consistency"),
         "overall_condition_score": record.get("overall_condition_score"),
         "priority_issues": "; ".join(record.get("priority_issues", []) or []),
         "image_count": len(record.get("images", [])),

@@ -5,12 +5,21 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 IMAGE_DIR = DATA_DIR / "images"
+GIS_DIR = DATA_DIR / "gis"
 RESULTS_DIR = DATA_DIR / "results"
 
 SIGNALS_GEOJSON = DATA_DIR / "signals.geojson"
 IMAGERY_MANIFEST = RESULTS_DIR / "imagery_manifest.csv"
+GIS_CONTEXT_CSV = RESULTS_DIR / "gis_context.csv"
 INVENTORY_GEOJSON = RESULTS_DIR / "intersection_inventory.geojson"
 INVENTORY_CSV = RESULTS_DIR / "intersection_inventory.csv"
+
+# Anchorage GIS Map Service endpoints (public, no auth needed).
+ANCHORAGE_PHOTO_2024 = "https://www.ancgis.com/arcgis/rest/services/imagery_public/Photo_2024/MapServer"
+ANCHORAGE_DEM_2025 = "https://www.ancgis.com/arcgis/rest/services/elevation_dem/DEM_2025/MapServer"
+AERIAL_HALF_EXTENT_M = 30.0
+AERIAL_TILE_PX = 512
+ANCHORAGE_GIS_RATE_LIMIT_SEC = 0.5
 
 OVERPASS_ENDPOINT = "https://overpass-api.de/api/interpreter"
 

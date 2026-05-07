@@ -121,9 +121,40 @@ def _bbox_xyxy(det: dict) -> tuple[float, float, float, float] | None:
     return None
 
 
+def _paste_aerial_inset(canvas: Image.Image, aerial_path: Path,
+                         area_w: int, area_h: int) -> None:
+    """Paste a 2024 aerial thumbnail in the top-right corner of the GSV area.
+
+    ``area_w`` / ``area_h`` describe the GSV portion of the canvas (top-left
+    origin) so the inset is placed inside that region rather than over the
+    bottom banner.
+    """
+    if not aerial_path.exists():
+        return
+    aerial = Image.open(aerial_path).convert("RGB")
+    inset = max(140, area_w // 4)  # ~25% of GSV width, min 140 px
+    aerial = aerial.resize((inset, inset), Image.LANCZOS)
+    pad = 8
+    x = area_w - inset - pad
+    y = pad
+    # White border so the thumbnail reads against varied GSV backgrounds.
+    border = Image.new("RGB", (inset + 4, inset + 4), (255, 255, 255))
+    canvas.paste(border, (x - 2, y - 2))
+    canvas.paste(aerial, (x, y))
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    font = _font(11)
+    label = "2024 aerial (top-down)"
+    tw = draw.textlength(label, font=font)
+    bar_h = 16
+    draw.rectangle([x, y + inset - bar_h, x + min(inset, int(tw) + 8), y + inset],
+                   fill=(0, 0, 0, 180))
+    draw.text((x + 4, y + inset - bar_h + 1), label, fill="white", font=font)
+
+
 def annotate_heading(src_path: Path, detections: list[dict], out_path: Path,
                      intersection_id: str, heading: int, pitch: int,
-                     severity_counts: Counter) -> None:
+                     severity_counts: Counter,
+                     aerial_path: Path | None = None) -> None:
     img = Image.open(src_path).convert("RGB")
     has_bbox = any(_bbox_xyxy(d) is not None for d in detections)
 
@@ -159,6 +190,11 @@ def annotate_heading(src_path: Path, detections: list[dict], out_path: Path,
                     label_top, label_bot, text_y = y2, min(img.height, y2 + 18), y2 + 1
                 draw.rectangle([x1, label_top, x1 + tw + 8, label_bot], fill=color)
                 draw.text((x1 + 4, text_y), label, fill="white", font=font)
+
+    # Aerial thumbnail in the top-right of the GSV area, before composing the
+    # banner so the inset sits inside the GSV portion (not over the banner).
+    if aerial_path is not None:
+        _paste_aerial_inset(img, aerial_path, img.width, img.height)
 
     # Banner along the bottom: title + severity-coded findings list.
     notable = [d for d in detections if severity_of(d) != "context"]
@@ -211,9 +247,16 @@ def write_index(rankings: list[dict], out_path: Path) -> None:
         return
 
     n_with_priority = sum(1 for r in rankings if r["score"] > 0)
+    n_with_aerial = sum(1 for r in rankings if r.get("aerial_xwalk") is not None)
     lines.append(f"**{n_with_priority}** of {len(rankings)} intersections have at least "
-                 f"one safety-relevant finding worth Traffic Engineering review.\n")
-    lines.append("Sorted by priority score (poor=10, fair-on-critical=3, "
+                 f"one safety-relevant finding worth Traffic Engineering review.")
+    if n_with_aerial:
+        n_inconsistent = sum(1 for r in rankings if r.get("consistency") is False)
+        lines.append(f"\n**Phase 7 context attached** for {n_with_aerial} of {len(rankings)} "
+                     f"intersections (DEM elevation + 2024 EagleView aerial crosswalk count). "
+                     f"{n_inconsistent} have ground vs aerial crosswalk counts that disagree "
+                     "by more than 4 — flagged inline below.")
+    lines.append("\nSorted by priority score (poor=10, fair-on-critical=3, "
                  "unassessable-on-critical=1).\n")
 
     lines.append("## Ranked findings\n")
@@ -240,6 +283,19 @@ def write_index(rankings: list[dict], out_path: Path) -> None:
             breakdown.append(f"{counts['not_assessable_critical']} unassessable-critical")
         if breakdown:
             lines.append("Severity: " + " · ".join(breakdown))
+        # Phase 7 context line — elevation + aerial crosswalk reconciliation.
+        ctx_parts: list[str] = []
+        if r.get("elevation_m") is not None:
+            ctx_parts.append(f"elev **{r['elevation_m']:.1f} m**")
+        ax = r.get("aerial_xwalk")
+        gx = r.get("ground_xwalk")
+        if ax is not None and gx is not None:
+            flag = ""
+            if r.get("consistency") is False:
+                flag = "  ⚠ ground likely fragmented"
+            ctx_parts.append(f"crosswalks ground **{gx}** / aerial **{ax}**{flag}")
+        if ctx_parts:
+            lines.append("Context: " + "  ·  ".join(ctx_parts))
         lines.append("")
         lines.append(f"![{img_name}]({img_name})")
         lines.append("")
@@ -287,6 +343,23 @@ def main(argv: list[str] | None = None) -> int:
         if worst_heading is None:
             continue
 
+        # Pull Phase 7 context (elevation + aerial crosswalk count) from the
+        # inventory JSON so we can surface it in the priority index. Optional
+        # — silently absent when Phase 7 hasn't run yet.
+        inv_path = config.RESULTS_DIR / f"{osm_id}_inventory.json"
+        elevation = aerial_xwalk = ground_xwalk = None
+        consistency = None
+        if inv_path.exists():
+            with inv_path.open("r", encoding="utf-8") as f:
+                inv = json.load(f)
+            elevation = inv.get("ground_elevation_m")
+            aerial_xwalk = inv.get("aerial_crosswalk_count")
+            consistency = inv.get("crosswalk_count_consistency")
+            for a in inv.get("assets", []):
+                if a.get("asset_type") == "crosswalk_marking":
+                    ground_xwalk = a.get("count")
+                    break
+
         rankings.append({
             "intersection_id": osm_id,
             "heading": worst_heading,
@@ -295,6 +368,10 @@ def main(argv: list[str] | None = None) -> int:
             "severity_counts": worst_counts,
             "lat": feat["properties"].get("lat"),
             "lon": feat["properties"].get("lon"),
+            "elevation_m": elevation,
+            "aerial_xwalk": aerial_xwalk,
+            "ground_xwalk": ground_xwalk,
+            "consistency": consistency,
             "_doc": doc,
         })
 
@@ -318,7 +395,10 @@ def main(argv: list[str] | None = None) -> int:
                 heading_dets = img_entry.get("detections", [])
                 break
         out = PRIORITY_DIR / img_name
-        annotate_heading(src, heading_dets, out, osm_id, heading, pitch, r["severity_counts"])
+        aerial_path = config.GIS_DIR / f"{osm_id}_aerial.jpg"
+        annotate_heading(src, heading_dets, out, osm_id, heading, pitch,
+                         r["severity_counts"],
+                         aerial_path=aerial_path if aerial_path.exists() else None)
 
     # Drop the in-memory doc reference before writing the index.
     for r in rankings:

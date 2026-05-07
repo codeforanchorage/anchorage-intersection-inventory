@@ -15,6 +15,8 @@ __pycache__/
 # Project outputs (derivative of paid Google Street View imagery; not for redistribution)
 data/images/
 data/results/
+# Anchorage GIS aerial / DEM tiles (public-source, but large + cacheable)
+data/gis/
 
 # Model weights (some gated; not redistributable)
 *.pt

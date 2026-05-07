@@ -41,7 +41,7 @@ def load_imagery_manifest() -> dict[str, dict]:
                 "gsv_pano_id": "", "gsv_date": "",
                 "covered": False, "images": [],
             })
-            if row["status"] == "OK" or row["status"] == "DRY_RUN":
+            if row["status"] in ("OK", "DRY_RUN", "SKIP_EXISTS"):
                 entry["covered"] = True
             if row["gsv_pano_id"]:
                 entry["gsv_pano_id"] = row["gsv_pano_id"]
@@ -49,6 +49,35 @@ def load_imagery_manifest() -> dict[str, dict]:
                 entry["gsv_date"] = row["gsv_date"]
             if row["image_path"]:
                 entry["images"].append(row["image_path"])
+    return out
+
+
+def load_gis_context() -> dict[str, dict]:
+    """Map intersection_id -> {ground_elevation_m, aerial_crosswalk_count, aerial_vehicle_count}.
+
+    Empty when Phase 7 hasn't been run yet — Phase 4 falls back to GSV-only output.
+    """
+    out: dict[str, dict] = {}
+    if not config.GIS_CONTEXT_CSV.exists():
+        return out
+    with config.GIS_CONTEXT_CSV.open("r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            entry: dict = {}
+            elev = row.get("ground_elevation_m", "")
+            if elev not in ("", None):
+                try:
+                    entry["ground_elevation_m"] = float(elev)
+                except ValueError:
+                    pass
+            for k in ("aerial_crosswalk_count", "aerial_vehicle_count"):
+                v = row.get(k, "")
+                if v not in ("", None):
+                    try:
+                        entry[k] = int(v)
+                    except ValueError:
+                        pass
+            if entry:
+                out[row["intersection_id"]] = entry
     return out
 
 
@@ -186,8 +215,9 @@ def main(argv: list[str] | None = None) -> int:
         features = features[: args.limit]
 
     manifest = load_imagery_manifest()
+    gis_context = load_gis_context()
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    n_written = n_no_detect = 0
+    n_written = n_no_detect = n_with_aerial = 0
 
     for feat in features:
         osm_id = feat["properties"]["osm_id"]
@@ -199,6 +229,22 @@ def main(argv: list[str] | None = None) -> int:
             doc = json.load(f)
         agg = aggregate_intersection(doc)
         manifest_entry = manifest.get(osm_id, {})
+        gis_entry = gis_context.get(osm_id, {})
+        if gis_entry:
+            n_with_aerial += 1
+
+        # Crosswalk consistency: ground SAM 3 fragments zebra stripes; aerial
+        # is the saner top-down count. Flag when they disagree by >4 (the gap
+        # observed at top-priority intersections in the PoC was -5 to -17).
+        ground_xwalk = next(
+            (a["count"] for a in agg["assets"] if a["asset_type"] == "crosswalk_marking"),
+            0,
+        )
+        aerial_xwalk = gis_entry.get("aerial_crosswalk_count")
+        consistency = None
+        if aerial_xwalk is not None:
+            consistency = abs(ground_xwalk - aerial_xwalk) <= 4
+
         record = {
             "intersection_id": osm_id,
             "lat": feat["properties"]["lat"],
@@ -208,6 +254,10 @@ def main(argv: list[str] | None = None) -> int:
             "gsv_date": manifest_entry.get("gsv_date", ""),
             "gsv_pano_id": manifest_entry.get("gsv_pano_id", ""),
             "images": [Path(p).name for p in manifest_entry.get("images", [])],
+            "ground_elevation_m": gis_entry.get("ground_elevation_m"),
+            "aerial_crosswalk_count": aerial_xwalk,
+            "aerial_vehicle_count": gis_entry.get("aerial_vehicle_count"),
+            "crosswalk_count_consistency": consistency,
             **agg,
         }
         out_path = config.RESULTS_DIR / f"{osm_id}_inventory.json"
@@ -216,6 +266,8 @@ def main(argv: list[str] | None = None) -> int:
         n_written += 1
 
     print(f"Inventory records written: {n_written}  missing detections: {n_no_detect}")
+    if gis_context:
+        print(f"  with aerial/elevation context: {n_with_aerial}")
     return 0
 
 
