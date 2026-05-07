@@ -14,6 +14,7 @@ import csv
 import json
 import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
@@ -103,6 +104,7 @@ def process_intersections(
 ) -> tuple[int, int, int, int]:
     """Returns (covered, missing, downloaded, skipped_existing)."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    # Read prior manifest BEFORE any writes touch the target file.
     cached_meta = load_existing_metadata(manifest_path)
     covered = missing = downloaded = skipped_existing = 0
 
@@ -110,7 +112,15 @@ def process_intersections(
         "intersection_id", "lat", "lon", "heading", "pitch",
         "image_path", "gsv_pano_id", "gsv_date", "status",
     ]
-    with manifest_path.open("w", newline="", encoding="utf-8") as f:
+    # Write to a temp file in the same directory; rename on success so a mid-run
+    # crash doesn't destroy the existing manifest (and its cached pano metadata).
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        prefix=manifest_path.stem + ".", suffix=".csv.tmp",
+        dir=str(manifest_path.parent),
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_name)
+    with tmp_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
 
@@ -180,6 +190,10 @@ def process_intersections(
                         "gsv_pano_id": pano_id, "gsv_date": date, "status": img_status,
                     })
 
+    # Atomic publish — replace the old manifest only after the new one is fully
+    # written. os.replace is atomic on Windows when source and destination are
+    # in the same directory.
+    os.replace(tmp_path, manifest_path)
     return covered, missing, downloaded, skipped_existing
 
 

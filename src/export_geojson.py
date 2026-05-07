@@ -22,12 +22,18 @@ OSM_TAGS_TO_KEEP = {
 
 
 def flatten_assets(assets: list[dict]) -> dict:
-    """Flatten the assets array into ArcGIS-friendly columns: <asset>_count, <asset>_condition, etc."""
+    """Flatten the assets array into ArcGIS-friendly columns: <asset>_count,
+    <asset>_avg_score, <asset>_worst_condition, plus heading/pitch attribution
+    so analysts can navigate from the GeoJSON to the actual evidence."""
     flat: dict = {}
     for asset_type in config.ASSET_TYPES:
         flat[f"{asset_type}_count"] = 0
         flat[f"{asset_type}_avg_score"] = None
         flat[f"{asset_type}_worst_condition"] = None
+        flat[f"{asset_type}_worst_heading"] = None
+        flat[f"{asset_type}_best_pitch"] = None
+        flat[f"{asset_type}_headings_seen"] = ""
+        flat[f"{asset_type}_pitches_seen"] = ""
     for a in assets:
         t = a["asset_type"]
         if t not in config.ASSET_TYPES:
@@ -35,6 +41,10 @@ def flatten_assets(assets: list[dict]) -> dict:
         flat[f"{t}_count"] = flat.get(f"{t}_count", 0) + a["count"]
         flat[f"{t}_avg_score"] = a["avg_condition_score"]
         flat[f"{t}_worst_condition"] = a["worst_condition"]
+        flat[f"{t}_worst_heading"] = a.get("worst_heading")
+        flat[f"{t}_best_pitch"] = a.get("best_pitch")
+        flat[f"{t}_headings_seen"] = ";".join(str(h) for h in a.get("headings_seen", []))
+        flat[f"{t}_pitches_seen"] = ";".join(str(p) for p in a.get("pitches_seen", []))
     return flat
 
 

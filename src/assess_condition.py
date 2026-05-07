@@ -53,20 +53,31 @@ def load_imagery_manifest() -> dict[str, dict]:
 
 
 def aggregate_intersection(detections_doc: dict) -> dict:
-    """Collapse per-image detections into per-asset summaries."""
-    by_asset: dict[str, dict] = defaultdict(lambda: {
+    """Collapse per-image detections into per-asset summaries.
+
+    Multi-pitch dedup: the same physical asset (e.g. a mast arm) appears in
+    every pitch image of a given heading. Counting naively triples the count.
+    Strategy: group by (heading, pitch, asset_type), then for each
+    (heading, asset_type) take the pitch with the max count as the canonical
+    observation; sum canonical counts across headings. Conditions, scores, and
+    notes are unioned across all pitches for an asset so we don't lose a
+    'poor' observation that only one pitch caught.
+    """
+    # Per (heading, pitch, asset_type) bucket.
+    by_h_p_a: dict[tuple, dict] = defaultdict(lambda: {
         "count": 0,
         "scores": [],
         "conditions": [],
         "notes": [],
     })
-
     for img in detections_doc.get("images", []):
+        heading = img.get("heading", 0)
+        pitch = img.get("pitch", 10)
         for det in img.get("detections", []):
             asset = det.get("asset_type", "other") or "other"
             cond = det.get("condition", "not_assessable")
             note = det.get("condition_notes", "")
-            entry = by_asset[asset]
+            entry = by_h_p_a[(heading, pitch, asset)]
             entry["count"] += 1
             entry["conditions"].append(cond)
             s = score(cond)
@@ -74,6 +85,56 @@ def aggregate_intersection(detections_doc: dict) -> dict:
                 entry["scores"].append(s)
             if note and note.lower() not in {"none", "no issues observed", ""}:
                 entry["notes"].append(note)
+
+    # Reshape: per (asset, heading) -> list of (pitch, entry) across all pitches.
+    by_a_h: dict[tuple, list[tuple[int, dict]]] = defaultdict(list)
+    for (heading, pitch, asset), entry in by_h_p_a.items():
+        by_a_h[(asset, heading)].append((pitch, entry))
+
+    # Aggregate per asset: canonical count per heading, union conditions.
+    by_asset: dict[str, dict] = defaultdict(lambda: {
+        "count": 0,
+        "scores": [],
+        "conditions": [],
+        "notes": [],
+        "headings_seen": set(),
+        "pitches_seen": set(),
+        "worst_heading": None,
+        "worst_heading_rank": 4,  # higher than any CONDITION_RANK + 1
+        "best_pitch": None,
+        "best_pitch_count": -1,
+    })
+    for (asset, heading), pitch_entries in by_a_h.items():
+        canonical_pitch, canonical_entry = max(pitch_entries, key=lambda pe: pe[1]["count"])
+        canonical_count = canonical_entry["count"]
+        out = by_asset[asset]
+        out["count"] += canonical_count
+        out["headings_seen"].add(heading)
+        for pitch, entry in pitch_entries:
+            out["pitches_seen"].add(pitch)
+            out["scores"].extend(entry["scores"])
+            out["conditions"].extend(entry["conditions"])
+            out["notes"].extend(entry["notes"])
+        # Track which heading has the worst-condition observation for this asset.
+        heading_worst = worst_condition(
+            [c for _, e in pitch_entries for c in e["conditions"]]
+        )
+        rank = CONDITION_RANK.get(heading_worst, 0)
+        # Lower rank = worse condition (1=poor); track the heading with the worst.
+        # Skip not_assessable (rank 0) unless nothing else has been seen.
+        is_real = heading_worst in CONDITION_RANK and heading_worst != "not_assessable"
+        if is_real and rank < out["worst_heading_rank"]:
+            out["worst_heading_rank"] = rank
+            out["worst_heading"] = heading
+        elif out["worst_heading"] is None:
+            out["worst_heading"] = heading
+        # Best pitch for this asset = pitch that produced the most detections at
+        # any heading (ties broken by larger pitch — 25/45 imply discovery).
+        if (canonical_count > out["best_pitch_count"]
+                or (canonical_count == out["best_pitch_count"]
+                    and (out["best_pitch"] or 0) < canonical_pitch)):
+            out["best_pitch_count"] = canonical_count
+            out["best_pitch"] = canonical_pitch
 
     assets = []
     weighted_scores: list[float] = []
@@ -92,6 +153,10 @@ def aggregate_intersection(detections_doc: dict) -> dict:
             "count": info["count"],
             "avg_condition_score": round(avg, 3) if avg is not None else None,
             "worst_condition": worst,
+            "worst_heading": info["worst_heading"],
+            "best_pitch": info["best_pitch"],
+            "headings_seen": sorted(info["headings_seen"]),
+            "pitches_seen": sorted(info["pitches_seen"]),
             "notes": deduped,
         })
         if avg is not None:
