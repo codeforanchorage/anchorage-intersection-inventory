@@ -1,4 +1,11 @@
-"""Phase 2: Download Google Street View imagery for each intersection."""
+"""Phase 2: Download Google Street View imagery for each intersection.
+
+Files are stored as ``{osm_id}_h{heading}_p{pitch}.jpg`` so multiple pitches
+per heading can coexist. Re-runs are idempotent: if a file already exists on
+disk it is not re-downloaded, and the manifest row is preserved with status
+``SKIP_EXISTS``. Pano-id and date are cached from the prior manifest where
+available so we skip the metadata round-trip for already-covered intersections.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +31,30 @@ def load_intersections(path: Path) -> list[dict]:
     return fc.get("features", [])
 
 
+def load_existing_metadata(manifest_path: Path) -> dict[str, dict]:
+    """Return {intersection_id: {pano_id, date, covered}} from a prior manifest.
+
+    Lets reruns avoid hitting the GSV metadata endpoint for intersections we
+    already know are covered (or known-missing).
+    """
+    out: dict[str, dict] = {}
+    if not manifest_path.exists():
+        return out
+    with manifest_path.open("r", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            xid = row["intersection_id"]
+            if xid in out:
+                # Prefer the first OK row's metadata; otherwise keep what's there.
+                if out[xid].get("status") == "OK":
+                    continue
+            out[xid] = {
+                "pano_id": row.get("gsv_pano_id", "") or "",
+                "date": row.get("gsv_date", "") or "",
+                "status": row.get("status", "") or "",
+            }
+    return out
+
+
 def metadata_for(lat: float, lon: float, key: str) -> dict:
     """Hit the GSV metadata endpoint to confirm imagery exists. Free and unmetered."""
     params = {"location": f"{lat},{lon}", "key": key}
@@ -32,12 +63,13 @@ def metadata_for(lat: float, lon: float, key: str) -> dict:
     return response.json()
 
 
-def download_image(lat: float, lon: float, heading: int, key: str, out_path: Path) -> None:
+def download_image(lat: float, lon: float, heading: int, pitch: int,
+                   key: str, out_path: Path) -> None:
     params = {
         "size": config.GSV_SIZE,
         "location": f"{lat},{lon}",
         "heading": heading,
-        "pitch": config.GSV_PITCH,
+        "pitch": pitch,
         "fov": config.GSV_FOV,
         "key": key,
     }
@@ -68,13 +100,14 @@ def process_intersections(
     api_key: str,
     dry_run: bool,
     manifest_path: Path,
-) -> tuple[int, int, int]:
-    """Returns (covered, missing, downloaded)."""
+) -> tuple[int, int, int, int]:
+    """Returns (covered, missing, downloaded, skipped_existing)."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    covered = missing = downloaded = 0
+    cached_meta = load_existing_metadata(manifest_path)
+    covered = missing = downloaded = skipped_existing = 0
 
     fieldnames = [
-        "intersection_id", "lat", "lon", "heading",
+        "intersection_id", "lat", "lon", "heading", "pitch",
         "image_path", "gsv_pano_id", "gsv_date", "status",
     ]
     with manifest_path.open("w", newline="", encoding="utf-8") as f:
@@ -86,12 +119,21 @@ def process_intersections(
             osm_id = props["osm_id"]
             lon, lat = feat["geometry"]["coordinates"]
 
-            try:
-                meta = request_with_backoff(metadata_for, lat, lon, api_key)
-            except Exception as exc:
-                print(f"  {osm_id}: metadata error: {exc}")
-                meta = {"status": "ERROR"}
-            time.sleep(config.GSV_RATE_LIMIT_SEC)
+            # Reuse prior manifest metadata when present; otherwise hit the API.
+            cached = cached_meta.get(osm_id)
+            if cached and cached.get("status") in {"OK", "ZERO_RESULTS", "NOT_FOUND"}:
+                meta = {
+                    "status": cached["status"],
+                    "pano_id": cached["pano_id"],
+                    "date": cached["date"],
+                }
+            else:
+                try:
+                    meta = request_with_backoff(metadata_for, lat, lon, api_key)
+                except Exception as exc:
+                    print(f"  {osm_id}: metadata error: {exc}")
+                    meta = {"status": "ERROR"}
+                time.sleep(config.GSV_RATE_LIMIT_SEC)
 
             status = meta.get("status", "UNKNOWN")
             pano_id = meta.get("pano_id", "")
@@ -101,38 +143,44 @@ def process_intersections(
                 missing += 1
                 writer.writerow({
                     "intersection_id": osm_id, "lat": lat, "lon": lon,
-                    "heading": "", "image_path": "", "gsv_pano_id": "",
-                    "gsv_date": "", "status": status,
+                    "heading": "", "pitch": "", "image_path": "",
+                    "gsv_pano_id": "", "gsv_date": "", "status": status,
                 })
                 continue
 
             covered += 1
             for heading in config.GSV_HEADINGS:
-                image_path = config.IMAGE_DIR / f"{osm_id}_h{heading}.jpg"
-                if dry_run:
-                    img_str = ""
-                    img_status = "DRY_RUN"
-                else:
-                    try:
-                        request_with_backoff(
-                            download_image, lat, lon, heading, api_key, image_path,
-                        )
-                        downloaded += 1
-                        img_str = str(image_path.relative_to(config.PROJECT_ROOT))
-                        img_status = "OK"
-                    except Exception as exc:
-                        print(f"  {osm_id} h{heading}: download error: {exc}")
+                for pitch in config.GSV_PITCHES:
+                    image_path = config.IMAGE_DIR / f"{osm_id}_h{heading}_p{pitch}.jpg"
+                    if dry_run:
                         img_str = ""
-                        img_status = "DOWNLOAD_ERROR"
-                    time.sleep(config.GSV_RATE_LIMIT_SEC)
+                        img_status = "DRY_RUN"
+                    elif image_path.exists():
+                        img_str = str(image_path.relative_to(config.PROJECT_ROOT))
+                        img_status = "SKIP_EXISTS"
+                        skipped_existing += 1
+                    else:
+                        try:
+                            request_with_backoff(
+                                download_image, lat, lon, heading, pitch,
+                                api_key, image_path,
+                            )
+                            downloaded += 1
+                            img_str = str(image_path.relative_to(config.PROJECT_ROOT))
+                            img_status = "OK"
+                        except Exception as exc:
+                            print(f"  {osm_id} h{heading} p{pitch}: download error: {exc}")
+                            img_str = ""
+                            img_status = "DOWNLOAD_ERROR"
+                        time.sleep(config.GSV_RATE_LIMIT_SEC)
 
-                writer.writerow({
-                    "intersection_id": osm_id, "lat": lat, "lon": lon,
-                    "heading": heading, "image_path": img_str,
-                    "gsv_pano_id": pano_id, "gsv_date": date, "status": img_status,
-                })
+                    writer.writerow({
+                        "intersection_id": osm_id, "lat": lat, "lon": lon,
+                        "heading": heading, "pitch": pitch, "image_path": img_str,
+                        "gsv_pano_id": pano_id, "gsv_date": date, "status": img_status,
+                    })
 
-    return covered, missing, downloaded
+    return covered, missing, downloaded, skipped_existing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -157,13 +205,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit is not None:
         features = features[: args.limit]
 
-    print(f"Processing {len(features)} intersections (dry_run={args.dry_run})...")
-    covered, missing, downloaded = process_intersections(
+    print(f"Processing {len(features)} intersections "
+          f"(dry_run={args.dry_run}, headings={config.GSV_HEADINGS}, "
+          f"pitches={config.GSV_PITCHES})...")
+    covered, missing, downloaded, skipped = process_intersections(
         features, api_key, args.dry_run, config.IMAGERY_MANIFEST,
     )
     print(f"  GSV coverage OK: {covered}")
     print(f"  GSV no coverage: {missing}")
     print(f"  Images downloaded: {downloaded}")
+    print(f"  Images skipped (already on disk): {skipped}")
     print(f"Manifest: {config.IMAGERY_MANIFEST}")
     return 0
 

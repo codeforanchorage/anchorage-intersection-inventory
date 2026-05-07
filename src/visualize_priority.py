@@ -4,9 +4,9 @@ For every intersection with detection data, this picks the heading with the
 most safety-relevant findings (poor + fair on critical assets) and writes:
 
   data/results/priority/
-      {osm_id}_h{heading}.jpg     # annotated GSV with severity-coded labels
-      index.md                    # one-page ranked report linking each
-                                  # intersection to its visualization
+      {osm_id}_h{heading}_p{pitch}.jpg     # annotated GSV with severity-coded labels
+      index.md                             # one-page ranked report linking each
+                                           # intersection to its visualization
 
 Severity tiers:
   poor             → red highlight  (immediate attention)
@@ -76,6 +76,13 @@ def severity_of(det: dict) -> str:
     return "context"
 
 
+SEV_LABEL_SHORT = {
+    "poor": "POOR",
+    "fair_critical": "FAIR_CRIT",
+    "not_assessable_critical": "NAc",
+}
+
+
 def color_of(severity: str) -> tuple[int, int, int]:
     return {
         "poor": COLOR_POOR,
@@ -115,7 +122,7 @@ def _bbox_xyxy(det: dict) -> tuple[float, float, float, float] | None:
 
 
 def annotate_heading(src_path: Path, detections: list[dict], out_path: Path,
-                     intersection_id: str, heading: int,
+                     intersection_id: str, heading: int, pitch: int,
                      severity_counts: Counter) -> None:
     img = Image.open(src_path).convert("RGB")
     has_bbox = any(_bbox_xyxy(d) is not None for d in detections)
@@ -131,15 +138,27 @@ def annotate_heading(src_path: Path, detections: list[dict], out_path: Path,
             sev = severity_of(det)
             color = color_of(sev)
             x1, y1, x2, y2 = xy
+            # Clamp to image bounds — SAM 3 occasionally returns bboxes that
+            # extend past the visible frame (overhead assets at high pitch).
+            x1 = max(0, min(x1, img.width - 1))
+            x2 = max(x1 + 1, min(x2, img.width))
+            y1 = max(0, min(y1, img.height - 1))
+            y2 = max(y1 + 1, min(y2, img.height))
+            xy_clamped = (x1, y1, x2, y2)
             if sev == "context":
-                draw.rectangle(xy, outline=color + (140,), width=1)
+                draw.rectangle(xy_clamped, outline=color + (140,), width=1)
             else:
-                draw.rectangle(xy, outline=color, width=4)
-                label = f"{sev.upper()} · {det.get('asset_type', '?')}"
+                draw.rectangle(xy_clamped, outline=color, width=4)
+                label = f"{SEV_LABEL_SHORT.get(sev, sev.upper())} · {det.get('asset_type', '?')}"
                 font = _font(13)
                 tw = draw.textlength(label, font=font)
-                draw.rectangle([x1, max(0, y1 - 18), x1 + tw + 8, y1], fill=color)
-                draw.text((x1 + 4, max(0, y1 - 17)), label, fill="white", font=font)
+                # Place the label above the bbox if there's room, else below.
+                if y1 >= 18:
+                    label_top, label_bot, text_y = y1 - 18, y1, y1 - 17
+                else:
+                    label_top, label_bot, text_y = y2, min(img.height, y2 + 18), y2 + 1
+                draw.rectangle([x1, label_top, x1 + tw + 8, label_bot], fill=color)
+                draw.text((x1 + 4, text_y), label, fill="white", font=font)
 
     # Banner along the bottom: title + severity-coded findings list.
     notable = [d for d in detections if severity_of(d) != "context"]
@@ -149,7 +168,7 @@ def annotate_heading(src_path: Path, detections: list[dict], out_path: Path,
     new.paste(img, (0, 0))
     bdraw = ImageDraw.Draw(new)
 
-    title = f"{intersection_id}  ·  heading {heading}°"
+    title = f"{intersection_id}  ·  heading {heading}°  ·  pitch {pitch}°"
     bdraw.text((8, img.height + 4), title, fill=COLOR_FG, font=_font(15))
     summary_parts = []
     if severity_counts.get("poor"):
@@ -202,8 +221,9 @@ def write_index(rankings: list[dict], out_path: Path) -> None:
         osm_id = r["intersection_id"]
         score = r["score"]
         heading = r["heading"]
+        pitch = r.get("pitch", 10)
         counts = r["severity_counts"]
-        img_name = f"{osm_id}_h{heading}.jpg"
+        img_name = f"{osm_id}_h{heading}_p{pitch}.jpg"
         lat = r.get("lat")
         lon = r.get("lon")
         gmap = (f"[Open in Google Maps](https://www.google.com/maps?q={lat},{lon})"
@@ -252,8 +272,9 @@ def main(argv: list[str] | None = None) -> int:
         with det_path.open("r", encoding="utf-8") as f:
             doc = json.load(f)
 
-        # Score each heading; pick the worst.
+        # Score each (heading, pitch) image; pick the worst.
         worst_heading = None
+        worst_pitch = None
         worst_score = -1
         worst_counts: Counter = Counter()
         for img_entry in doc.get("images", []):
@@ -261,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             if score > worst_score:
                 worst_score = score
                 worst_heading = img_entry.get("heading")
+                worst_pitch = img_entry.get("pitch", 10)
                 worst_counts = counts
         if worst_heading is None:
             continue
@@ -268,6 +290,7 @@ def main(argv: list[str] | None = None) -> int:
         rankings.append({
             "intersection_id": osm_id,
             "heading": worst_heading,
+            "pitch": worst_pitch,
             "score": worst_score,
             "severity_counts": worst_counts,
             "lat": feat["properties"].get("lat"),
@@ -282,18 +305,20 @@ def main(argv: list[str] | None = None) -> int:
     for r in rankings:
         osm_id = r["intersection_id"]
         heading = r["heading"]
-        img_name = f"{osm_id}_h{heading}.jpg"
+        pitch = r.get("pitch", 10)
+        img_name = f"{osm_id}_h{heading}_p{pitch}.jpg"
         src = config.IMAGE_DIR / img_name
         if not src.exists():
             continue
-        # Find the detections for this heading.
+        # Find the detections for this (heading, pitch).
         heading_dets: list[dict] = []
         for img_entry in r["_doc"].get("images", []):
-            if img_entry.get("heading") == heading:
+            if (img_entry.get("heading") == heading
+                    and img_entry.get("pitch", 10) == pitch):
                 heading_dets = img_entry.get("detections", [])
                 break
         out = PRIORITY_DIR / img_name
-        annotate_heading(src, heading_dets, out, osm_id, heading, r["severity_counts"])
+        annotate_heading(src, heading_dets, out, osm_id, heading, pitch, r["severity_counts"])
 
     # Drop the in-memory doc reference before writing the index.
     for r in rankings:

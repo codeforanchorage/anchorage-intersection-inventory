@@ -414,7 +414,18 @@ def list_images_for(intersection_id: str) -> list[Path]:
 
 
 def heading_from_path(path: Path) -> int:
-    return int(path.stem.split("_h")[-1])
+    """Extract heading from filenames like ``osm_X_h90_p25.jpg`` or legacy ``osm_X_h90.jpg``."""
+    after_h = path.stem.split("_h")[-1]
+    head_str = after_h.split("_p", 1)[0]
+    return int(head_str)
+
+
+def pitch_from_path(path: Path) -> int:
+    """Extract pitch from filenames like ``osm_X_h90_p25.jpg``. Defaults to 10 for legacy names."""
+    parts = path.stem.split("_p")
+    if len(parts) < 2:
+        return 10
+    return int(parts[-1])
 
 
 def detections_path(intersection_id: str) -> Path:
@@ -507,6 +518,7 @@ async def _run_vision_only_concurrent(
         results_by_osm[osm_id].append({
             "image": img_path.name,
             "heading": heading_from_path(img_path),
+            "pitch": pitch_from_path(img_path),
             "detections": detections,
         })
         completed += 1
@@ -515,7 +527,7 @@ async def _run_vision_only_concurrent(
 
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     for osm_id, image_entries in results_by_osm.items():
-        image_entries.sort(key=lambda e: e["heading"])
+        image_entries.sort(key=lambda e: (e["heading"], e.get("pitch", 0)))
         with detections_path(osm_id).open("w", encoding="utf-8") as f:
             json.dump({"intersection_id": osm_id, "images": image_entries}, f, indent=2)
 
@@ -708,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
             per_image: list[dict] = []
             for img_path in images:
                 heading = heading_from_path(img_path)
+                pitch = pitch_from_path(img_path)
                 if args.backend == "vision-only":
                     detections = process_image_vision_only(img_path, claude_client, args.claude_model)
                 else:
@@ -715,7 +728,10 @@ def main(argv: list[str] | None = None) -> int:
                         img_path, args.backend, detector_state,
                         args.with_condition, claude_client, args.claude_model,
                     )
-                per_image.append({"image": img_path.name, "heading": heading, "detections": detections})
+                per_image.append({
+                    "image": img_path.name, "heading": heading, "pitch": pitch,
+                    "detections": detections,
+                })
 
             with detections_path(osm_id).open("w", encoding="utf-8") as f:
                 json.dump({"intersection_id": osm_id, "images": per_image}, f, indent=2)

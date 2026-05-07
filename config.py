@@ -39,7 +39,9 @@ GSV_BASE_URL = "https://maps.googleapis.com/maps/api/streetview"
 GSV_METADATA_URL = "https://maps.googleapis.com/maps/api/streetview/metadata"
 GSV_HEADINGS = [0, 90, 180, 270]
 GSV_SIZE = "640x640"
-GSV_PITCH = 10
+# Multiple pitches let SAM 3 catch overhead assets (signal heads, mast arms,
+# pedestrian heads) that pitch=10 misses. p10 = original baseline run.
+GSV_PITCHES = [10, 25, 45]
 GSV_FOV = 90
 GSV_RATE_LIMIT_SEC = 1.0
 

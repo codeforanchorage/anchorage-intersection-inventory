@@ -7,8 +7,8 @@ same priority headings and writing per-asset bbox overlays — the kind of
 visual evidence Traffic Engineering will reach for first.
 
 Output:
-  data/results/priority/{osm_id}_h{heading}_sam3.jpg  # bbox overlay alongside
-                                                      # the existing _sidebar
+  data/results/priority/{osm_id}_h{heading}_p{pitch}_sam3.jpg  # bbox overlay alongside
+                                                               # the existing _sidebar
 """
 
 from __future__ import annotations
@@ -33,27 +33,31 @@ PRIORITY_DIR = config.RESULTS_DIR / "priority"
 INDEX_PATH = PRIORITY_DIR / "index.md"
 
 
-def parse_top_n(index_path: Path, n: int) -> list[tuple[str, int]]:
-    """Pull (osm_id, heading) pairs in priority order from the Phase 6 index."""
+def parse_top_n(index_path: Path, n: int) -> list[tuple[str, int, int]]:
+    """Pull (osm_id, heading, pitch) tuples in priority order from the Phase 6 index."""
     if not index_path.exists():
         raise FileNotFoundError(f"Phase 6 index not found at {index_path}. Run Phase 6 first.")
     text = index_path.read_text(encoding="utf-8")
-    pattern = re.compile(r"!\[(?P<osm>osm_\d+)_h(?P<h>\d+)\.jpg\]")
+    # Match new ``osm_X_hH_pP.jpg`` format and fall back to legacy ``osm_X_hH.jpg``.
+    pattern = re.compile(
+        r"!\[(?P<osm>osm_\d+)_h(?P<h>\d+)(?:_p(?P<p>\d+))?\.jpg\]"
+    )
     seen: set[str] = set()
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, int, int]] = []
     for m in pattern.finditer(text):
         osm = m.group("osm")
         if osm in seen:
             continue
         seen.add(osm)
-        out.append((osm, int(m.group("h"))))
+        pitch = int(m.group("p")) if m.group("p") else 10
+        out.append((osm, int(m.group("h")), pitch))
         if len(out) >= n:
             break
     return out
 
 
 def annotate_sam3_overlay(src: Path, detections: list[dict], out: Path,
-                          intersection_id: str, heading: int) -> None:
+                          intersection_id: str, heading: int, pitch: int) -> None:
     """Draw bboxes color-coded by asset_type. No banner — companion to the
     existing Phase 6 sidebar image which already lists findings."""
     img = Image.open(src).convert("RGB")
@@ -95,7 +99,7 @@ def annotate_sam3_overlay(src: Path, detections: list[dict], out: Path,
     composed = Image.new("RGB", (img.width, img.height + title_h), (20, 20, 20))
     composed.paste(img, (0, title_h))
     tdraw = ImageDraw.Draw(composed)
-    title = f"SAM 3 bbox overlay  ·  {intersection_id}  ·  heading {heading}°"
+    title = f"SAM 3 bbox overlay  ·  {intersection_id}  ·  heading {heading}°  ·  pitch {pitch}°"
     tdraw.text((8, 4), title, fill="white", font=font)
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -122,18 +126,19 @@ def main() -> int:
     n_done = 0
     n_skipped = 0
     started = time.time()
-    for osm_id, heading in targets:
-        src = config.IMAGE_DIR / f"{osm_id}_h{heading}.jpg"
+    for osm_id, heading, pitch in targets:
+        src = config.IMAGE_DIR / f"{osm_id}_h{heading}_p{pitch}.jpg"
         if not src.exists():
-            print(f"  [{osm_id} h{heading}] no GSV image — skipping")
+            print(f"  [{osm_id} h{heading} p{pitch}] no GSV image — skipping")
             n_skipped += 1
             continue
-        out = PRIORITY_DIR / f"{osm_id}_h{heading}_sam3.jpg"
+        out = PRIORITY_DIR / f"{osm_id}_h{heading}_p{pitch}_sam3.jpg"
         t0 = time.time()
         detections = detect_assets.detect_with_sam3(predictor, src, prompts)
-        annotate_sam3_overlay(src, detections, out, osm_id, heading)
+        annotate_sam3_overlay(src, detections, out, osm_id, heading, pitch)
         elapsed = time.time() - t0
-        print(f"  [{osm_id} h{heading}] {len(detections)} detections in {elapsed:.1f}s -> {out.name}")
+        print(f"  [{osm_id} h{heading} p{pitch}] {len(detections)} detections "
+              f"in {elapsed:.1f}s -> {out.name}")
         n_done += 1
 
     print(f"\nDone. {n_done} overlays written, {n_skipped} skipped, total {time.time() - started:.1f}s.")
