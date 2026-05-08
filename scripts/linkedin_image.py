@@ -93,12 +93,22 @@ def _aerial_vehicle_counts() -> dict[str, int]:
     return out
 
 
-def pick_best_view(pitch: int = 25, vehicle_penalty: float = 2.0) -> tuple[str, int, int]:
-    """Pick (osm_id, heading, pitch) maximizing visible pole assets minus a
-    vehicle penalty so we prefer scenes with infrastructure over scenes with
-    cars. ``vehicle_penalty`` weights one detected vehicle as N pole assets."""
+def pick_best_view(
+    pitch: int = 25,
+    target_count: int | None = None,
+    vehicle_penalty: float = 2.0,
+) -> tuple[str, int, int]:
+    """Pick (osm_id, heading, pitch) for the cleanest demo image.
+
+    ``target_count`` — when set, prefers scenes with roughly this many
+    visible pole assets (closer to target wins). Useful for LinkedIn-style
+    posts where 40+ bboxes get crowded; 15-ish is more readable.
+    When ``target_count`` is None, just maximizes visible poles.
+
+    Tiebreakers in both modes: more distinct asset types, then fewer cars.
+    """
     veh = _aerial_vehicle_counts()
-    best = (-1e9, "", 0, pitch)
+    candidates = []
     for det_path in sorted(config.RESULTS_DIR.glob("osm_*_detections.json")):
         osm_id = det_path.stem.replace("_detections", "")
         with det_path.open() as f:
@@ -106,14 +116,28 @@ def pick_best_view(pitch: int = 25, vehicle_penalty: float = 2.0) -> tuple[str, 
         for img in doc.get("images", []):
             if img.get("pitch", 10) != pitch:
                 continue
-            visible = sum(
-                1 for det in img.get("detections", [])
+            visible_dets = [
+                det for det in img.get("detections", [])
                 if det.get("asset_type") in POLE_TYPES and not in_inset_zone(det)
-            )
-            score = visible - vehicle_penalty * veh.get(osm_id, 0)
-            if score > best[0]:
-                best = (score, osm_id, img.get("heading"), pitch)
-    return best[1], best[2], best[3]
+            ]
+            visible = len(visible_dets)
+            n_types = len({d.get("asset_type") for d in visible_dets})
+            cars = veh.get(osm_id, 0)
+            candidates.append((visible, n_types, cars, osm_id, img.get("heading")))
+
+    if target_count is not None:
+        # Closest to target, then fewest cars, then most asset-type variety.
+        # (Cars before variety: a clean infrastructure shot beats a busier one
+        # with one extra asset type.)
+        candidates.sort(key=lambda c: (abs(c[0] - target_count), c[2], -c[1]))
+    else:
+        # Most poles, fewest cars, most variety.
+        candidates.sort(key=lambda c: (-(c[0] - vehicle_penalty * c[2]), -c[1]))
+
+    if not candidates:
+        return "", 0, pitch
+    _, _, _, osm_id, heading = candidates[0]
+    return osm_id, heading, pitch
 
 
 def load_detections(osm_id: str, heading: int, pitch: int) -> list[dict]:
@@ -192,13 +216,21 @@ def main() -> int:
     parser.add_argument("--pitch", type=int, default=25,
                         choices=[10, 25, 45],
                         help="GSV pitch (default 25 — balanced view).")
+    parser.add_argument("--target-count", type=int, default=15,
+                        help="Aim for this many visible pole assets (default "
+                             "15 — readable for social posts). Pass 0 to "
+                             "instead maximize the asset count.")
     args = parser.parse_args()
 
     if args.osm_id and args.heading is not None:
         osm_id, heading, pitch = args.osm_id, args.heading, args.pitch
     else:
-        osm_id, heading, pitch = pick_best_view(pitch=args.pitch)
-        print(f"Auto-picked: {osm_id} heading={heading}° pitch={pitch}°")
+        target = args.target_count if args.target_count > 0 else None
+        osm_id, heading, pitch = pick_best_view(
+            pitch=args.pitch, target_count=target,
+        )
+        print(f"Auto-picked: {osm_id} heading={heading}° pitch={pitch}° "
+              f"(target ~{args.target_count or 'max'} pole assets)")
 
     out_dir = config.RESULTS_DIR / "linkedin"
     out_path, original_path = render(osm_id, heading, pitch, out_dir)
